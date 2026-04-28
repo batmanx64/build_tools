@@ -23,7 +23,9 @@ ONLYOFFICE DocumentServer 支持三种主要的构建方式：开发环境构建
 --update=1                     # 更新仓库 (1=true, 0=false)
 --update-light=1               # 轻量更新 (仅拉取，不切换分支)
 --branch=<branch_name>         # 分支名 (默认: master)
---module=<modules>             # 要构建的模块 (core, server, sdkjs, web-apps, desktop, builder, mobile)
+--module=<modules>             # 要构建的模块
+                               # 常用值: core, server, desktop, builder, mobile, osign
+                               # JS 相关仓库: sdkjs, web-apps (用于 JS 构建/部署，但不是 sln.json 中的主构建模块)
 --platform=<platform>          # 平台 (native, linux_64, win_64, mac_64 等)
 --clean=0                      # 不重新构建 (开发模式通常设为0)
 --multiprocess=1               # 启用多进程构建
@@ -40,11 +42,22 @@ ONLYOFFICE DocumentServer 支持三种主要的构建方式：开发环境构建
    python make.py
    ```
 
+> 开发模式下 `make.py` 会先执行 `develop.make()`，再进入 `build_sln.make()`、`build_js.make()`、`build_server.make()` 和 `deploy.make()` 阶段。
+> `build_js.make()` 默认会构建 JS 资源，除非环境变量 `OO_NO_BUILD_JS=1` 被设置。
+
 ### 开发模式特点
 - **增量构建**: 不清理之前的构建产物
 - **源码映射**: 保留源码结构便于调试
 - **热重载**: 支持代码修改后快速重启服务
 - **调试信息**: 包含详细的调试日志和错误信息
+
+### 模块名称与编译路径匹配说明
+- `--module` 参数可指定多个模块，使用空格分隔。
+- `build_tools/sln.json` 中主要识别的模块为: `core`, `builder`, `server`, `desktop`, `mobile`, `osign`。
+- `sdkjs` 和 `web-apps` 在构建系统中通常作为 JS 仓库和资源目录参与 `build_js` 阶段，而不是 `sln.json` 里直接的主构建模块。
+- 如果仅指定 `sdkjs web-apps`，`build_sln` 阶段不会把它们当作独立项目构建；建议同时包含 `server` / `builder` / `desktop` 等主模块，以确保最终部署路径正确。
+- 输出路径必须与模块类型对应：核心 C++ /服务模块走 `out/<platform>/onlyoffice/`，JS 资源走 `out/js/`。
+- 如发现构建模块与输出路径不匹配，可通过调整 `--module` 为正确的主模块组合，或手动检查 `build_tools/sln.json` 中的模块定义。
 
 ### 配置文件
 - **主配置文件**: scripts/develop/develop.py
@@ -52,7 +65,15 @@ ONLYOFFICE DocumentServer 支持三种主要的构建方式：开发环境构建
 - **依赖检查**: scripts/develop/dependence.py
 
 ### 输出位置
-- 构建产物: build_tools/out/ 目录
+- JS 构建产物: build_tools/out/js/<branding>/
+  - builder: `build_tools/out/js/onlyoffice/builder`
+  - desktop: `build_tools/out/js/onlyoffice/desktop`
+  - mobile: `build_tools/out/js/onlyoffice/mobile`
+- 服务器/产品部署输出: `build_tools/out/<platform>/onlyoffice/`
+  - Document Server: `build_tools/out/linux_64/onlyoffice/documentserver/`
+  - Desktop Editors: `build_tools/out/linux_64/onlyoffice/desktopeditors/`
+  - Document Builder: `build_tools/out/linux_64/onlyoffice/documentbuilder/`
+- 简化说明: `build_tools/out/` 是构建输出的根目录，具体子目录由平台和目标模块决定
 - 开发服务器: 直接在源码目录运行，无需打包
 
 ## 2. 生产环境构建

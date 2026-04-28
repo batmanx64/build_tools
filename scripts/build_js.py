@@ -1,190 +1,245 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+build_js.py - JavaScript 构建模块
+===================================
+功能：通过 Grunt 构建 SDKJS 和 Web-Apps 前端资源。
+处理 builder、desktop、mobile 三种前端构建模式。
+
+构建参数：
+  - NODE_ENV=production（生产模式）
+  - Closure Compiler 级别：ADVANCED（压缩）或 WHITESPACE_ONLY（仅 JS 构建/开发模式）
+  - 支持 --beta、--desktop、--mobile 等 Grunt 参数
+"""
 
 import config
 import base
 import os
 
+
 def correct_sdkjs_licence(directory):
-  branding = config.option("branding")
-  if "" == branding or "onlyoffice" == branding:
+    """
+    修正品牌定制后 SDKJS 文件的许可证信息。
+    非 onlyoffice 品牌时需要替换许可证头部。
+    """
+    branding = config.option("branding")
+    if "" == branding or "onlyoffice" == branding:
+        return
+    license = base.readFileLicence(directory + "/word/sdk-all-min.js")
+    base.replaceFileLicence(directory + "/common/Charts/ChartStyles.js", license)
+    base.replaceFileLicence(directory + "/common/hash/hash/engine.js", license)
+    base.replaceFileLicence(directory + "/common/hash/hash/engine_ie.js", license)
+    base.replaceFileLicence(directory + "/common/Native/native.js", license)
+    base.replaceFileLicence(directory + "/common/Native/native_graphics.js", license)
+    base.replaceFileLicence(directory + "/common/spell/spell/spell.js", license)
+    base.replaceFileLicence(directory + "/common/spell/spell/spell_ie.js", license)
+    base.replaceFileLicence(directory + "/pdf/src/engine/drawingfile.js", license)
+    base.replaceFileLicence(directory + "/pdf/src/engine/drawingfile_ie.js", license)
+    base.replaceInFile(directory + "/word/sdk-all-min.js", "onlyoffice-spellchecker", "r7-spellchecker")
+    base.replaceInFile(directory + "/slide/sdk-all-min.js", "onlyoffice-spellchecker", "r7-spellchecker")
+    base.replaceInFile(directory + "/cell/sdk-all-min.js", "onlyoffice-spellchecker", "r7-spellchecker")
     return
-  license = base.readFileLicence(directory + "/word/sdk-all-min.js")
-  base.replaceFileLicence(directory + "/common/Charts/ChartStyles.js", license)
-  base.replaceFileLicence(directory + "/common/hash/hash/engine.js", license)
-  base.replaceFileLicence(directory + "/common/hash/hash/engine_ie.js", license)
-  base.replaceFileLicence(directory + "/common/Native/native.js", license)
-  base.replaceFileLicence(directory + "/common/Native/native_graphics.js", license)
-  base.replaceFileLicence(directory + "/common/spell/spell/spell.js", license)
-  base.replaceFileLicence(directory + "/common/spell/spell/spell_ie.js", license)
-  base.replaceFileLicence(directory + "/pdf/src/engine/drawingfile.js", license)
-  base.replaceFileLicence(directory + "/pdf/src/engine/drawingfile_ie.js", license)
-  base.replaceInFile(directory + "/word/sdk-all-min.js", "onlyoffice-spellchecker", "r7-spellchecker")
-  base.replaceInFile(directory + "/slide/sdk-all-min.js", "onlyoffice-spellchecker", "r7-spellchecker")
-  base.replaceInFile(directory + "/cell/sdk-all-min.js", "onlyoffice-spellchecker", "r7-spellchecker")
-  return
 
-# make build.pro
+
 def make():
-  if ("1" == base.get_env("OO_NO_BUILD_JS")):
+    """
+    主入口：构建所有 JS 资源。
+    根据 --module 参数构建 builder、desktop、mobile 对应的前端资源。
+    输出到 out/js/<branding>/ 目录。
+    """
+    # 环境变量控制：OO_NO_BUILD_JS=1 时跳过 JS 构建
+    if ("1" == base.get_env("OO_NO_BUILD_JS")):
+        return
+    if not base.is_need_build_js():
+        return
+
+    # 生产模式下设置 NODE_ENV=production
+    base.set_env('NODE_ENV', 'production')
+
+    base_dir = base.get_script_dir() + "/.."
+    out_dir = base_dir + "/out/js/"
+    branding = config.option("branding-name")
+    if ("" == branding):
+        branding = "onlyoffice"
+    out_dir += branding
+    base.create_dir(out_dir)
+
+    isOnlyMobile = False
+    if (config.option("module") == "mobile"):
+        isOnlyMobile = True
+
+    # ---- 构建 Builder 版 JS ----
+    if not isOnlyMobile:
+        base.cmd_in_dir(base_dir + "/../web-apps/translation", "python", ["merge_and_check.py"])
+        build_interface(base_dir + "/../web-apps/build")
+        build_sdk_builder(base_dir + "/../sdkjs/build")
+        base.create_dir(out_dir + "/builder")
+        base.copy_dir(base_dir + "/../web-apps/deploy/web-apps", out_dir + "/builder/web-apps")
+        base.copy_dir(base_dir + "/../sdkjs/deploy/sdkjs", out_dir + "/builder/sdkjs")
+        correct_sdkjs_licence(out_dir + "/builder/sdkjs")
+
+    # ---- 构建 Desktop 版 JS ----
+    if config.check_option("module", "desktop") and not isOnlyMobile:
+        build_sdk_desktop(base_dir + "/../sdkjs/build")
+        base.create_dir(out_dir + "/desktop")
+        base.copy_dir(base_dir + "/../sdkjs/deploy/sdkjs", out_dir + "/desktop/sdkjs")
+        correct_sdkjs_licence(out_dir + "/desktop/sdkjs")
+        base.copy_dir(base_dir + "/../web-apps/deploy/web-apps", out_dir + "/desktop/web-apps")
+
+        # 删除桌面版不用的子目录（移动端、嵌入等）
+        deldirs = ['ie', 'mobile', 'embed']
+        [base.delete_dir(root + "/" + d) for root, dirs, f in os.walk(out_dir + "/desktop/web-apps/apps") for d in dirs if d in deldirs]
+
+        # 使用桌面版专用 index.html
+        base.copy_file(base_dir + "/../web-apps/apps/api/documents/index.html.desktop", out_dir + "/desktop/web-apps/apps/api/documents/index.html")
+
+        build_interface(base_dir + "/../desktop-apps/common/loginpage/build")
+        base.copy_file(base_dir + "/../desktop-apps/common/loginpage/deploy/index.html", out_dir + "/desktop/index.html")
+        base.copy_file(base_dir + "/../desktop-apps/common/loginpage/deploy/noconnect.html", out_dir + "/desktop/noconnect.html")
+
+    # ---- 构建 Mobile 版 JS ----
+    if config.check_option("module", "mobile"):
+        build_sdk_native(base_dir + "/../sdkjs/build")
+        base.create_dir(out_dir + "/mobile")
+        base.create_dir(out_dir + "/mobile/sdkjs")
+        vendor_dir_src = base_dir + "/../web-apps/vendor/"
+        sdk_dir_src = base_dir + "/../sdkjs/deploy/sdkjs/"
+
+        # 合并 JS 文件为移动端专用的 script.bin 二进制文件
+        prefix_js = [
+            vendor_dir_src + "xregexp/xregexp-all-min.js",
+            base_dir + "/../sdkjs/common/Native/native.js",
+            base_dir + "/../sdkjs-native/common/common.js",
+            base_dir + "/../sdkjs/common/Native/jquery_native.js"
+        ]
+
+        postfix_js = [
+            base_dir + "/../sdkjs/common/libfont/engine/fonts_native.js",
+            base_dir + "/../sdkjs/common/Charts/ChartStyles.js"
+        ]
+
+        base.join_scripts(prefix_js, out_dir + "/mobile/sdkjs/banners.js")
+
+        base.create_dir(out_dir + "/mobile/sdkjs/word")
+        base.join_scripts([out_dir + "/mobile/sdkjs/banners.js", sdk_dir_src + "word/sdk-all-min.js", sdk_dir_src + "word/sdk-all.js"] + postfix_js, out_dir + "/mobile/sdkjs/word/script.bin")
+        base.create_dir(out_dir + "/mobile/sdkjs/cell")
+        base.join_scripts([out_dir + "/mobile/sdkjs/banners.js", sdk_dir_src + "cell/sdk-all-min.js", sdk_dir_src + "cell/sdk-all.js"] + postfix_js, out_dir + "/mobile/sdkjs/cell/script.bin")
+        base.create_dir(out_dir + "/mobile/sdkjs/slide")
+        base.join_scripts([out_dir + "/mobile/sdkjs/banners.js", sdk_dir_src + "slide/sdk-all-min.js", sdk_dir_src + "slide/sdk-all.js"] + postfix_js, out_dir + "/mobile/sdkjs/slide/script.bin")
+
+        base.delete_file(out_dir + "/mobile/sdkjs/banners.js")
     return
-  if not base.is_need_build_js():
-    return
 
-  base.set_env('NODE_ENV', 'production')
 
-  base_dir = base.get_script_dir() + "/.."
-  out_dir = base_dir + "/out/js/"
-  branding = config.option("branding-name")
-  if ("" == branding):
-    branding = "onlyoffice"
-  out_dir += branding
-  base.create_dir(out_dir)
+# ============================================================
+# JS 构建辅助函数
+# ============================================================
 
-  isOnlyMobile = False
-  if (config.option("module") == "mobile"):
-    isOnlyMobile = True
-
-  # builder
-  if not isOnlyMobile:
-    base.cmd_in_dir(base_dir + "/../web-apps/translation", "python", ["merge_and_check.py"])
-    build_interface(base_dir + "/../web-apps/build")
-    build_sdk_builder(base_dir + "/../sdkjs/build")
-    base.create_dir(out_dir + "/builder")
-    base.copy_dir(base_dir + "/../web-apps/deploy/web-apps", out_dir + "/builder/web-apps")
-    base.copy_dir(base_dir + "/../sdkjs/deploy/sdkjs", out_dir + "/builder/sdkjs")
-    correct_sdkjs_licence(out_dir + "/builder/sdkjs")
-
-  # desktop
-  if config.check_option("module", "desktop") and not isOnlyMobile:
-    build_sdk_desktop(base_dir + "/../sdkjs/build")
-    base.create_dir(out_dir + "/desktop")
-    base.copy_dir(base_dir + "/../sdkjs/deploy/sdkjs", out_dir + "/desktop/sdkjs")
-    correct_sdkjs_licence(out_dir + "/desktop/sdkjs")
-    base.copy_dir(base_dir + "/../web-apps/deploy/web-apps", out_dir + "/desktop/web-apps")
-
-    deldirs = ['ie', 'mobile', 'embed']
-    [base.delete_dir(root + "/" + d) for root, dirs, f in os.walk(out_dir + "/desktop/web-apps/apps") for d in dirs if d in deldirs]
-
-    base.copy_file(base_dir + "/../web-apps/apps/api/documents/index.html.desktop", out_dir + "/desktop/web-apps/apps/api/documents/index.html")
-    
-    build_interface(base_dir + "/../desktop-apps/common/loginpage/build")
-    base.copy_file(base_dir + "/../desktop-apps/common/loginpage/deploy/index.html", out_dir + "/desktop/index.html")
-    base.copy_file(base_dir + "/../desktop-apps/common/loginpage/deploy/noconnect.html", out_dir + "/desktop/noconnect.html")
-
-  # mobile
-  if config.check_option("module", "mobile"):
-    build_sdk_native(base_dir + "/../sdkjs/build")
-    base.create_dir(out_dir + "/mobile")
-    base.create_dir(out_dir + "/mobile/sdkjs")
-    vendor_dir_src = base_dir + "/../web-apps/vendor/"
-    sdk_dir_src = base_dir + "/../sdkjs/deploy/sdkjs/"
-  
-    prefix_js = [
-      vendor_dir_src + "xregexp/xregexp-all-min.js", 
-      base_dir + "/../sdkjs/common/Native/native.js",
-      base_dir + "/../sdkjs-native/common/common.js",
-      base_dir + "/../sdkjs/common/Native/jquery_native.js"
-    ]
-
-    postfix_js = [
-      base_dir + "/../sdkjs/common/libfont/engine/fonts_native.js",
-      base_dir + "/../sdkjs/common/Charts/ChartStyles.js"
-    ]
-
-    base.join_scripts(prefix_js, out_dir + "/mobile/sdkjs/banners.js")
-
-    base.create_dir(out_dir + "/mobile/sdkjs/word")
-    base.join_scripts([out_dir + "/mobile/sdkjs/banners.js", sdk_dir_src + "word/sdk-all-min.js", sdk_dir_src + "word/sdk-all.js"] + postfix_js, out_dir + "/mobile/sdkjs/word/script.bin")
-    base.create_dir(out_dir + "/mobile/sdkjs/cell")
-    base.join_scripts([out_dir + "/mobile/sdkjs/banners.js", sdk_dir_src + "cell/sdk-all-min.js", sdk_dir_src + "cell/sdk-all.js"] + postfix_js, out_dir + "/mobile/sdkjs/cell/script.bin")
-    base.create_dir(out_dir + "/mobile/sdkjs/slide")
-    base.join_scripts([out_dir + "/mobile/sdkjs/banners.js", sdk_dir_src + "slide/sdk-all-min.js", sdk_dir_src + "slide/sdk-all.js"] + postfix_js, out_dir + "/mobile/sdkjs/slide/script.bin")
-
-    base.delete_file(out_dir + "/mobile/sdkjs/banners.js")
-  return
-
-# JS build
 def _run_npm(directory):
-  retValue = base.cmd_in_dir(directory, "npm", ["install"], True)
-  if (0 != retValue):
-    retValue = base.cmd_in_dir(directory, "npm", ["install", "--verbose"])
-  return retValue
+    """在指定目录运行 npm install，失败时添加 --verbose 重试。"""
+    retValue = base.cmd_in_dir(directory, "npm", ["install"], True)
+    if (0 != retValue):
+        retValue = base.cmd_in_dir(directory, "npm", ["install", "--verbose"])
+    return retValue
+
 
 def _run_npm_ci(directory):
-  return base.cmd_in_dir(directory, "npm", ["ci"])
+    """在指定目录运行 npm ci（比 npm install 更快更确定）。"""
+    return base.cmd_in_dir(directory, "npm", ["ci"])
+
 
 def _run_npm_cli(directory):
-  return base.cmd_in_dir(directory, "npm", ["install", "-g", "grunt-cli"])
+    """全局安装 grunt-cli。"""
+    return base.cmd_in_dir(directory, "npm", ["install", "-g", "grunt-cli"])
+
 
 def _run_grunt(directory, params=[]):
-  return base.cmd_in_dir(directory, "grunt", params)
+    """在指定目录运行 grunt。"""
+    return base.cmd_in_dir(directory, "grunt", params)
+
 
 def build_interface(directory):
-  _run_npm(directory)
-  _run_grunt(directory, ["--force", "--verbose"] + base.web_apps_addons_param())
-  return
+    """构建 Web-Apps 前端界面。"""
+    _run_npm(directory)
+    _run_grunt(directory, ["--force", "--verbose"] + base.web_apps_addons_param())
+    return
+
 
 def get_build_param(minimize=True):
-  minimize_scripts = minimize
-  if config.check_option("jsminimize", "0"):
-    minimize_scripts = False
-  beta = "true" if config.check_option("beta", "1") else "false"
-  params = ["--beta=" + beta]
-  return params + (["--level=ADVANCED"] if minimize_scripts else ["--level=WHITESPACE_ONLY", "--formatting=PRETTY_PRINT"])
+    """
+    获取 JS 构建参数。
+    minimize=True（生产模式）：使用 ADVANCED 级别完全压缩混淆
+    minimize=False（开发模式）：只做空白规范，保留格式便于调试
+    """
+    minimize_scripts = minimize
+    if config.check_option("jsminimize", "0"):
+        minimize_scripts = False
+    beta = "true" if config.check_option("beta", "1") else "false"
+    params = ["--beta=" + beta]
+    return params + (["--level=ADVANCED"] if minimize_scripts else ["--level=WHITESPACE_ONLY", "--formatting=PRETTY_PRINT"])
+
 
 def build_sdk_desktop(directory):
-  #_run_npm_cli(directory)
-  _run_npm(directory)  
-  _run_grunt(directory, get_build_param() + ["--desktop=true"] + base.sdkjs_addons_param() + base.sdkjs_addons_desktop_param())
-  return
+    """构建桌面版 SDKJS。"""
+    _run_npm(directory)
+    _run_grunt(directory, get_build_param() + ["--desktop=true"] + base.sdkjs_addons_param() + base.sdkjs_addons_desktop_param())
+    return
+
 
 def build_sdk_builder(directory):
-  #_run_npm_cli(directory)
-  _run_npm(directory)
-  _run_grunt(directory, get_build_param() + base.sdkjs_addons_param() + ["--map"])
-  return
+    """构建 Builder 版 SDKJS。"""
+    _run_npm(directory)
+    _run_grunt(directory, get_build_param() + base.sdkjs_addons_param() + ["--map"])
+    return
+
 
 def build_sdk_native(directory, minimize=True):
-  #_run_npm_cli(directory)
-  _run_npm(directory)
-  addons = base.sdkjs_addons_param()
-  if not config.check_option("sdkjs-addons", "sdkjs-native"):
-    addons.append("--addon=sdkjs-native")
-  _run_grunt(directory, get_build_param(minimize) + ["--mobile=true"] + addons)
-  return
+    """构建移动端原生 SDKJS。"""
+    _run_npm(directory)
+    addons = base.sdkjs_addons_param()
+    if not config.check_option("sdkjs-addons", "sdkjs-native"):
+        addons.append("--addon=sdkjs-native")
+    _run_grunt(directory, get_build_param(minimize) + ["--mobile=true"] + addons)
+    return
 
+
+# ============================================================
+# 开发模式 JS 构建
+# ============================================================
 
 def build_sdkjs_develop(root_dir):
-  external_folder = config.option("--external-folder")
-  if (external_folder != ""):
-    external_folder = "/" + external_folder
+    """开发模式构建 SDKJS（无压缩，保留格式）。"""
+    external_folder = config.option("--external-folder")
+    if (external_folder != ""):
+        external_folder = "/" + external_folder
 
-  _run_npm_ci(root_dir + external_folder + "/sdkjs/build")
-  _run_grunt(root_dir + external_folder + "/sdkjs/build", get_build_param(False) + base.sdkjs_addons_param())
-  _run_grunt(root_dir + external_folder + "/sdkjs/build", ["develop"] + base.sdkjs_addons_param())
+    _run_npm_ci(root_dir + external_folder + "/sdkjs/build")
+    _run_grunt(root_dir + external_folder + "/sdkjs/build", get_build_param(False) + base.sdkjs_addons_param())
+    _run_grunt(root_dir + external_folder + "/sdkjs/build", ["develop"] + base.sdkjs_addons_param())
 
 
 def build_js_develop(root_dir):
-  #_run_npm_cli(root_dir + "/sdkjs/build")
-  external_folder = config.option("--external-folder")
-  if (external_folder != ""):
-    external_folder = "/" + external_folder
-    
-  build_sdkjs_develop(root_dir)
+    """开发模式完整 JS 构建（SDKJS + Web-Apps + Framework7）。"""
+    external_folder = config.option("--external-folder")
+    if (external_folder != ""):
+        external_folder = "/" + external_folder
 
-  _run_npm(root_dir + external_folder + "/web-apps/build")
-  _run_npm_ci(root_dir + external_folder + "/web-apps/build/sprites")
-  _run_grunt(root_dir + external_folder + "/web-apps/build/sprites", [])
-  base.cmd_in_dir(root_dir + external_folder + "/web-apps/translation", "python", ["merge_and_check.py"])
+    build_sdkjs_develop(root_dir)
 
-  old_cur = os.getcwd()
-  old_product_version = base.get_env("PRODUCT_VERSION")
-  base.set_env("PRODUCT_VERSION", old_product_version + "d")
-  os.chdir(root_dir + external_folder + "/web-apps/vendor/framework7-react")
-  base.cmd("npm", ["ci"])
-  base.cmd("npm", ["run", "deploy-word"])
-  base.cmd("npm", ["run", "deploy-cell"])
-  base.cmd("npm", ["run", "deploy-slide"])
-  base.set_env("PRODUCT_VERSION", old_product_version)
-  os.chdir(old_cur)
-  return
+    _run_npm(root_dir + external_folder + "/web-apps/build")
+    _run_npm_ci(root_dir + external_folder + "/web-apps/build/sprites")
+    _run_grunt(root_dir + external_folder + "/web-apps/build/sprites", [])
+    base.cmd_in_dir(root_dir + external_folder + "/web-apps/translation", "python", ["merge_and_check.py"])
+
+    # 构建 Framework7 React 组件
+    old_cur = os.getcwd()
+    old_product_version = base.get_env("PRODUCT_VERSION")
+    base.set_env("PRODUCT_VERSION", old_product_version + "d")
+    os.chdir(root_dir + external_folder + "/web-apps/vendor/framework7-react")
+    base.cmd("npm", ["ci"])
+    base.cmd("npm", ["run", "deploy-word"])
+    base.cmd("npm", ["run", "deploy-cell"])
+    base.cmd("npm", ["run", "deploy-slide"])
+    base.set_env("PRODUCT_VERSION", old_product_version)
+    os.chdir(old_cur)
+    return
